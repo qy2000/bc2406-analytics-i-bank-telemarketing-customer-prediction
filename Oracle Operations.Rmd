@@ -1,0 +1,1644 @@
+---
+title: "Oracle Operations POC using UCI Bank Marketing Dataset"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+# Flow of Oracle POC
+1) Data visualisations on input dataset
+2) Data cleaning
+3) Categorical encoding
+4) Data visualisations on cleaned dataset
+5) Clustering & feature engineering using k-means clustering
+6) Final dataset
+7) Train test split and SMOTE
+8) Logistic regression models with stratified 10-fold cross validation(cv)
+9) CART models with 10-fold cv
+10) XGBoost model with stratified 10-fold cv
+11) XGBoost feature importance
+12) Boruta feature selection
+13) Optimised XGBoost using Boruta features with stratified 10-fold cv
+14) XGBoost for Boruta data & HR data with stratified 10-fold cv
+15) XGBoost for Boruta data & Investment data with stratified 10-fold cv
+16) XGBoost for Boruta data & HR & Investment data with stratified 10-fold cv
+17) Optimised XGBoost from (17) with hyperparameter tuning
+
+# Import libraries
+```{r}
+# data table
+library(data.table)
+
+# data visualisation
+library(gmodels)
+library(corrplot)
+library(caTools)
+library(ggplot2)
+library(reshape2)
+library(caTools)
+library(ggridges)
+library(scales)
+library(ggmosaic)
+library(cluster)
+library(gridExtra)
+library(factoextra)
+
+# data cleaning
+library(mltools)
+library(DMwR)
+library(dplyr)
+
+# feature selection
+library(Boruta)
+
+# predictive modelling
+library(rpart)
+library(rpart.plot) 
+library(xgboost)
+library(caret)
+library(cluster)
+
+```
+
+# Our Problem
+Reducing labour costs through the automation of operational processes.
+
+# Read csv data
+```{r}
+bankData <-fread("C:/Users/qingy/OneDrive/Documents/BC2406 Analytics I/Project/bank-full.csv", stringsAsFactors = TRUE)
+#bankData <-fread("bank-full.csv", stringsAsFactors = TRUE)
+head(bankData)
+```
+
+# Exploratory Data Analysis
+### Size of dataset
+```{r}
+dim(bankData)
+```
+### Column names of dataset
+```{r}
+names(bankData)
+```
+### Statistical Summary of dataset
+```{r}
+summary(bankData)
+```
+### Check for null values
+```{r}
+sum(is.na(bankData))    ## no NA in dataset
+```
+### Rename output variable, y, to response for greater clarity in analysis
+```{r}
+# Rename column y to response
+names(bankData)[names(bankData) == "y"] <- "response"
+```
+
+### Response - The clients subscribed a term deposit? (binary: ‘yes’, ‘no’)
+```{r}
+CrossTable(bankData$response)
+```
+```{r}
+ggplot(bankData, aes(x = response)) + 
+  geom_bar(fill = "indianred3", colour="black") +
+  labs(x = "Outcome", 
+       y = "Count", 
+       title = "Frequency by Response - Has the Client Subscribed a Term Deposit?") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Data Visualization: 
+### Univariate Numeric Analysis
+```{r}
+bankNum = bankData[, lapply(bankData, is.numeric) == TRUE, with = FALSE, ]
+head(bankNum)
+```
+```{r}
+ggplot(melt(bankNum), aes(x = value)) + 
+    facet_wrap(~ variable, scales = "free", ncol = 2) + 
+    geom_histogram(binwidth = 1, fill = "indianred3", colour="black")+
+    theme_minimal()+
+    labs(x = "Factors", y = "Distribution", title = "Histogram of X Factors") +
+    theme(plot.title = element_text(hjust = 0.4))
+```
+```{r}
+# Create a kernel density plot of age
+ggplot(melt(bankNum), aes(x = value)) + 
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  geom_density(fill = "indianred3")+
+  theme_minimal()+
+  labs(x = "Factors", y = "Density", title = "Density Plot of X Factors") +
+  theme(plot.title = element_text(hjust = 0.4))
+```
+### Univariate Categorical Analysis
+```{r}
+bankCat = bankData[, lapply(bankData, is.factor) == TRUE, with = FALSE, ]
+head(bankCat)
+```
+```{r}
+bankCat1= bankCat[, c("job", "marital", "education","default", "response")]
+ggplot(melt(bankCat1, id.vars="response"), aes(y = value)) + 
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(fill = "indianred3", color="black")+
+  theme_minimal()+
+  labs(x = "Factors", y = "Levels", title = "Barplot of Categorical X Factors") +
+  theme(plot.title = element_text(hjust = 0.35))
+```
+```{r}
+bankCat2= bankCat[, c("housing","loan","contact","month","poutcome", "response")]
+ggplot(melt(bankCat2, id.vars="response"), aes(y = value)) + 
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(fill = "indianred3", 
+           color="black")+
+  theme_minimal()+
+  theme(text = element_text(size=10))+
+  labs(x = "Factors", y = "Levels", title = "Barplot of Categorical X Factors") +
+  theme(plot.title = element_text(hjust = 0.35))
+```
+
+### Bivariate Analysis
+```{r}
+bankNum1 = bankNum[, response := bankData$response]
+```
+```{r}
+# plot the distribution using violin and boxplots
+bankNum2 = bankNum1[,c("age", "balance", "day", "duration", "response")]
+ggplot(melt(bankNum2, id.vars="response"), 
+       aes(x = value, 
+           y = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_violin(fill = "indianred3") +
+  geom_boxplot(width = .2, 
+               fill = "orange",
+               outlier.color = "orange",
+               outlier.size = 2)+
+  theme_minimal()+
+  labs(x = "Distribution of X Factors", y = "Response", title = "Plotting age, balance, day and duration against response") +
+  theme(plot.title = element_text(hjust = 0.4))
+```
+```{r}
+# plot the distribution using violin and boxplots
+bankNum3 = bankNum1[,c("campaign", "pdays", "previous", "response")]
+ggplot(melt(bankNum3, id.vars="response"), 
+       aes(x = value, 
+           y = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_violin(fill = "indianred3") +
+  geom_boxplot(width = .2, 
+               fill = "orange",
+               outlier.color = "orange",
+               outlier.size = 2)+
+  theme_minimal()+
+  labs(x = "Distribution of X Factors", y = "Response", title = "Plotting campaign, pdays and previous against response") +
+  theme(plot.title = element_text(hjust = 0.4))
+```
+```{r}
+ggplot(melt(bankNum1, id.vars="response"), 
+       aes(x = value, 
+           y = response, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_density_ridges() + 
+  theme_ridges()+
+  theme_minimal()+
+  labs(x = "Distribution of X Factors", y = "Response", title = "Plotting X Factors against Response") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+bankCat1 = bankCat[, response := bankData$response]
+# plot the distribution using violin and boxplots
+# Grouped bar chart relationship between job and marital status
+bankCat2 = bankCat1[,c("job", "marital", "education", "default", "response")]
+ggplot(melt(bankCat2, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "dodge") + 
+  theme_minimal()+
+  labs(x = "Count", y = "Levels", title = "Barplots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(text = element_text(size=10))
+
+```
+```{r}
+bankCat3 = bankCat1[,c("housing", "loan", "contact", "month","poutcome", "response")]
+ggplot(melt(bankCat3, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "dodge") + 
+  theme_minimal()+
+  labs(x = "Count", y = "Levels", title = "Barplots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(text = element_text(size=10))
+```
+```{r}
+ggplot(melt(bankCat2, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "fill") +
+  scale_x_continuous(breaks = seq(0, 1, .2)) +
+  theme_minimal()+
+  theme(text = element_text(size=10))+
+  labs(x = "Proportion", y = "Levels", title = "Proportion Plots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+ggplot(melt(bankCat3, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "fill") +
+  scale_x_continuous(breaks = seq(0, 1, .2)) +
+  theme_minimal()+
+  theme(text = element_text(size=8))+
+  labs(x = "Proportion", y = "Levels", title = "Proportion Plots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Data visualisations on customer data
+```{r}
+# plot the distribution of age
+ggplot(bankNum1, 
+       aes(x = response, 
+           y = age, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  scale_y_continuous() +
+  labs(title = "Response by Age", 
+       x = "Response",
+       y = "Age") +
+  theme(legend.position = "none") +
+  coord_flip()
+```
+
+```{r}
+ggplot(bankNum1, 
+       aes(y = response, 
+           x = balance, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  labs(title = "Response by Balance where $-5000 < Balance < $10000", 
+       y = "Response",
+       x = "Balance") +
+  theme(legend.position = "none") +
+coord_cartesian(xlim = c(-5000, 10000))
+
+```
+
+```{r}
+# grouped bar chart
+ggplot(data = bankData, aes(x = job,fill = response)) + geom_bar(position = "dodge")  + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(y = "Count", x = "Job types", title = "Response by Job")
+```
+
+```{r}
+# stacked bar chart with percentages
+plotdata <- bankData %>%
+  group_by(job, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x= factor(job,
+                      levels = unique(bankData$job)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Job types", y = "Percent", title = "Response by Jobs", fill="response")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+```{r}
+# grouped bar chart
+ggplot(data = bankData, aes(x = education,fill = response)) + geom_bar(position = "dodge")  + 
+  theme() +
+  labs(y = "Count", x = "Education Level", title = "Response by Education Level")
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- bankData %>%
+  group_by(education, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x= factor(education,
+                      levels = unique(bankData$education)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Education", y = "Percent", title = "Response by Education", fill="response")+
+  theme_minimal()
+```
+```{r}
+# grouped bar chart
+ggplot(data = bankData, aes(x = marital,fill = response)) + geom_bar(position = "dodge")  + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(y = "Count", x = "Marital Status", title = "Response by Marital Status")
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- bankData %>%
+  group_by(marital, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x = factor(marital,
+                      levels = unique(bankData$marital)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Marital Status", y = "Percent", title = "Response by Marital Status", fill="response")+
+  theme_minimal()
+```
+
+## Data Visualisations on telemarketing data
+Duration
+```{r}
+ggplot(bankNum1, 
+       aes(y = response, 
+           x = duration, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  labs(title = "Response by Duration of contact < 2500", 
+       y = "Response",
+       x = "Duration of contact") +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(-10, 2500))
+  
+```
+
+Pdays
+```{r}
+# plot the distribution of pdays
+ggplot(bankNum1, 
+       aes(x = response, 
+           y = pdays, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 2) +
+  scale_y_continuous() +
+  labs(title = "Response by Days since customer was last contacted from previous campaign", 
+       x = "Response",
+       y = "Pdays") +
+  theme(legend.position = "none") +
+  coord_flip()
+```
+Campaign
+```{r}
+# plot the distribution of age
+ggplot(bankNum1, 
+       aes(x = response, 
+           y = campaign, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  #geom_jitter(alpha = 0.5, 
+  #            width=.2) + 
+  scale_y_continuous() +
+  labs(title = "Response by number of contacts performed in this campaign", 
+       x = "Response",
+       y = "Number of contacts performed in this campaign") +
+ 
+  theme(legend.position = "none") +
+  coord_flip()
+```
+
+Contact
+```{r}
+# grouped bar chart
+ggplot(data = bankData, aes(x = contact,fill = response)) + geom_bar(position = "dodge")  + 
+  theme() +
+  labs(y = "Count", x = "Contact Types", title = "Response by Contact Type")
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- bankData %>%
+  group_by(contact, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x = factor(contact,
+                      levels = unique(bankData$contact)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Contact Type", y = "Percent", title = "Response by Contact Type", fill="response")+
+  theme_minimal()
+```
+
+Poutcome
+```{r}
+# grouped bar chart
+ggplot(data = bankData, aes(x = poutcome,fill = response)) + geom_bar(position = "dodge")  + 
+  theme() +
+  labs(y = "Count", x = "Poutcome", title = "Response by Outcome of Previous Campaign")
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- bankData %>%
+  group_by(poutcome, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x = factor(poutcome,
+                      levels = unique(bankData$poutcome)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Poutcome", y = "Percent", title = "Response by Outcome of Previous Campaign", fill="response")+
+  theme_minimal()
+```
+
+### Correlation plot for numeric variables
+```{r}
+corrData <- copy(bankData)
+corrData$response <- as.numeric(factor(corrData$response, levels = c("no", "yes"), exclude = NULL))
+# Correlation Matrix
+bankNum = corrData[, lapply(corrData, is.numeric) == TRUE, with = FALSE, ]
+corrplot(cor(bankNum), type = "upper", title = "Correlation Plot for Numeric Data", mar=c(0,0,1,0),
+         tl.cex=1,
+         tl.col = "black")
+```
+
+## Data Cleaning
+```{r}
+newData = copy(bankData)
+numCol <- unlist(lapply(newData, is.numeric))  
+newData <- newData[ , numCol, with=FALSE]
+newData$ID <- seq.int(nrow(newData)) # create id
+
+```
+
+### Removing outliers for numeric variables duration and campaign
+```{r}
+# identify and removing outliers for Duration using boxplot
+outliersDur<-boxplot(newData$duration)$out
+newData<- newData[-which(newData$duration %in% outliersDur),]
+# identify and removing outliers for Campaign using boxplot
+outliersCam<-boxplot(newData$campaign)$out
+newData<- newData[-which(newData$campaign %in% outliersCam),]
+
+```
+```{r}
+dim(newData)
+```
+
+### Replace unknown with mode for categorical Variables job and education 
+```{r}
+# create a copy
+newCatTemp <- copy(bankData)
+catCol <- which(sapply(bankData,is.factor))
+newCat <- newCatTemp[ , catCol, with=FALSE]
+newCat$ID <- seq.int(nrow(newCat))
+```
+```{r}
+# find mode
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+jobMode = getmode(newCat$job)
+newCat$job[newCat$job == 'unknown'] <- jobMode
+
+eduMode = getmode(newCat$education)
+newCat[education=="unknown", education:=eduMode]
+head(newCat)
+```
+
+## Categorical Encoding
+### Ordinal encoding for education and month
+```{r}
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  x
+}
+
+newCat$encodedEdu = encode_ordinal(newCat$education, order = c("primary", "secondary", "tertiary"))
+newCat$encodedMonth = encode_ordinal(newCat$month, order = c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))
+head(newCat)
+```
+
+### One-hot encoding
+```{r}
+newCat_OH = copy(newCat)
+oneHot <- newCat_OH[, c("job","marital", "housing", "default", "loan", "contact", "poutcome")]
+summary(oneHot)
+oneHot <- one_hot(as.data.table(oneHot))
+oneHot$ID <- seq.int(nrow(oneHot))
+head(oneHot)
+```
+
+## Final cleaned data (After Data Cleaning)
+```{r}
+finalData <- left_join(newData,newCat, by="ID")
+finalData <- left_join(finalData, oneHot, by="ID")
+finalData$response = as.numeric(ifelse(finalData$response=="yes", 1, 0))
+# drop columns
+finalData = finalData[,c("ID","job", "marital", "education", "default", "housing", "loan", "contact", "month", "poutcome", "pdays", "job_unknown"):= NULL]
+head(finalData, 50)
+dim(finalData)
+
+```
+```{r}
+Filter(var, finalData) # drop columns with all same value
+```
+
+## More Data Visualisations on Cleaned Data
+```{r}
+newNum = copy(newData)
+newNum1 = newNum[,response:=finalData$response]
+# plot the distribution using violin and boxplots
+ggplot(melt(newNum1, id.vars="response"), 
+       aes(x = value, 
+           y = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_point()+
+  geom_smooth(method=lm, se=FALSE)+
+  theme_minimal()+
+  labs(x = "Scatterplot of X Factors", y = "Response", title = "X Factors against Response") 
+
+```
+```{r}
+newNum1$response = as.factor(newNum1$response)
+levels(newNum1$response) <- c('no', 'yes')
+```
+```{r}
+# plot the distribution using violin and boxplots
+newNum2 = newNum1[,c("age", "balance", "day", "duration", "response")]
+ggplot(melt(newNum2, id.vars="response"), 
+       aes(x = value, 
+           y = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_violin(fill = "indianred3") +
+  geom_boxplot(width = .2, 
+               fill = "orange",
+               outlier.color = "orange",
+               outlier.size = 2)+
+  theme_minimal()+
+  labs(x = "Distribution of X Factors", y = "Outcome", title = "Plotting age, balance, day and duration against Response") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+newNum1 = copy(newNum)
+newNum1 = newNum1[,response:=finalData$response]
+newNum1$response = as.factor(newNum1$response)
+levels(newNum1$response) <- c('no', 'yes')
+```
+```{r}
+# plot the distribution of duration
+ggplot(newNum1, 
+       aes(x = response, 
+           y = duration, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  #geom_jitter(alpha = 0.5, 
+  #            width=.2) + 
+  scale_y_continuous() +
+  labs(title = "Response by Duration of contact", 
+       x = "Response",
+       y = "Duration of contact") +
+ 
+  theme(legend.position = "none") +
+  coord_flip()
+```
+```{r}
+# plot the distribution of campaign
+ggplot(newNum1, 
+       aes(x = response, 
+           y = campaign, 
+           color = response)) +
+  geom_violin() +
+  geom_boxplot(size=1,
+               width = .2,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  #geom_jitter(alpha = 0.5, 
+  #            width=.2) + 
+  scale_y_continuous() +
+  labs(title = "Response by number of contacts performed in this campaign", 
+       x = "Response",
+       y = "Number of contacts performed in this campaign") +
+ 
+  theme(legend.position = "none") +
+  coord_flip()
+```
+```{r}
+newCat_VizTemp<- copy(newCat)
+newCat_VizTemp<-newCat_VizTemp[newData$ID,]
+newCat_Viz <- newCat_VizTemp[ , c("job", "marital", "education", "default", "housing", "loan", "contact", "month", "poutcome")]
+```
+```{r}
+newCat_Viz1 = newCat_Viz[, response:=finalData$response]
+newCat_Viz1$response = as.factor(newNum1$response)
+levels(newCat_Viz1$response) <- c('no', 'yes')
+# plot the distribution using violin and boxplots
+# Grouped bar chart relationship between job and marital status
+newCat_Viz2 = newCat_Viz1[,c("job", "marital", "education", "default", "response")]
+ggplot(melt(newCat_Viz2, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "dodge") + 
+  theme_minimal()+
+  labs(x = "Count", y = "Levels", title = "Barplots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(text = element_text(size=10))
+
+```
+```{r}
+newCat_Viz3 = newCat_Viz1[,c("housing", "loan", "contact", "month","poutcome", "response")]
+ggplot(melt(newCat_Viz3, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "dodge") + 
+  theme_minimal()+
+  labs(x = "Count", y = "Levels", title = "Barplots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(text = element_text(size=10))
+```
+```{r}
+ggplot(melt(newCat_Viz2, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "fill") +
+  scale_x_continuous(breaks = seq(0, 1, .2)) +
+  theme_minimal()+
+  theme(text = element_text(size=10))+
+  labs(x = "Proportion", y = "Levels", title = "Proportion Plots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+ggplot(melt(newCat_Viz3, id.vars="response"), 
+       aes(y = value, 
+           fill = response)) +
+  facet_wrap(~ variable, scales = "free", ncol=2) +
+  geom_bar(position = "fill") +
+  scale_x_continuous(breaks = seq(0, 1, .2)) +
+  theme_minimal()+
+  theme(text = element_text(size=8))+
+  labs(x = "Proportion", y = "Levels", title = "Proportion Plots of X Factors against Response")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- newCat_Viz2 %>%
+  group_by(education, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x= factor(education,
+                      levels = unique(newCat_Viz2$education)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Education", y = "Percent", title = "Response by Education", fill="response")+
+  theme_minimal()
+```
+```{r}
+# stacked bar chart with percentages
+plotdata <- newCat_Viz2 %>%
+  group_by(job, response) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))
+
+ggplot(plotdata, 
+       aes(x= factor(job,
+                      levels = unique(newCat_Viz2$job)),
+           y = pct,
+           fill = factor(response, 
+                         levels = c("no", "yes"),
+                         labels = c("no", "yes")))) + 
+  geom_bar(stat = "identity",
+           position = "fill") +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     label = percent) +
+  geom_text(aes(label = lbl), 
+            size = 3, 
+            position = position_stack(vjust = 0.5)) +
+  labs(x = "Job", y = "Percent", title = "Response by Job", fill="response")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+## Feature engineering using k means clustering
+```{r}
+# customer segmentation, clustering based on customer data
+custData <- copy(finalData)
+custData <- custData[, c("day", "duration", "campaign", "previous", "encodedMonth", "contact_unknown", "contact_cellular", "contact_telephone", "poutcome_failure", "poutcome_other", "poutcome_success", "poutcome_unknown"):=NULL]
+bss <- numeric()
+wss <- numeric()
+
+# Run the algorithm for different values of k 
+set.seed(2004)
+
+for(i in 1:10){
+
+  # For each k, calculate betweenss and tot.withinss
+  bss[i] <- kmeans(custData, centers=i)$betweenss
+  wss[i] <- kmeans(custData, centers=i)$tot.withinss
+
+}
+
+# Between-cluster sum of squares vs Choice of k
+p3 <- qplot(1:10, bss, geom=c("point", "line"), 
+            xlab="Number of clusters", ylab="Between-cluster sum of squares") +
+  scale_x_continuous(breaks=seq(0, 10, 1)) +
+  labs(title = "BSS against Number of clusters")+
+  theme_bw()+
+  theme(plot.title = element_text(size=12))
+
+# Total within-cluster sum of squares vs Choice of k
+p4 <- qplot(1:10, wss, geom=c("point", "line"),
+            xlab="Number of clusters", ylab="Total within-cluster sum of squares") +
+  scale_x_continuous(breaks=seq(0, 10, 1)) +
+  labs(title = "WSS against Number of clusters")+
+  theme_bw()+
+  theme(plot.title = element_text(size=12))
+
+# Subplot
+grid.arrange(p3, p4, ncol=2)
+
+```
+Which is the optimal value for k? One should choose a number of clusters so that adding another cluster doesn’t give much better partition of the data. At some point the gain will drop, giving an angle in the graph (elbow criterion). The number of clusters is chosen at this point. In our case, it is clear that 4 is the appropriate value for k.
+k = 4 looks optimal
+
+```{r}
+# Execution of k-means with k=4
+set.seed(2004)
+bank_k4 <- kmeans(custData, centers=4)
+# Cluster to which each point is allocated
+bank_k4$centers
+bank_k4$size
+```
+```{r}
+fviz_cluster(bank_k4, data = custData)
+```
+```{r}
+finalClusteredData = finalData[, cluster:=bank_k4$cluster ]
+finalClusteredData$cluster = as.integer(finalClusteredData$cluster)
+head(finalClusteredData)
+```
+```{r}
+finalClusteredData_Viz = copy(finalClusteredData)
+finalClusteredData_Viz$cluster = as.factor(finalClusteredData_Viz$cluster)
+finalClusteredData_Viz$response = as.factor(finalClusteredData_Viz$response)
+levels(finalClusteredData_Viz$response) <- c('no', 'yes')
+ggplot(finalClusteredData_Viz, aes(x = balance, 
+                     y = response, 
+                     color=cluster)) +
+    geom_jitter(alpha = 0.7,
+              size = 1.5) + 
+  labs(x = "Balance", y = "Response", title = "Response by Balance and Cluster")
+```
+```{r}
+# Grouped bar chart relationship between cluster and response
+ggplot(finalClusteredData_Viz, aes(y = cluster, fill = response)) + geom_bar(position = "dodge") + theme()+
+labs(y = "Cluster", x = "Count", title = "Cluster based on Response")+
+theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+# Stacked bar chart to show the praportion of individual based on marital status have a housing loan
+ggplot(data = finalClusteredData_Viz, aes(y = cluster,fill = response)) + geom_bar(position = "fill") + labs(x = "Proportion", y = "Cluster", title = "Proportion of Cluster by Response")+
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Final Dataset
+### Columns
+```{r}
+names(finalClusteredData)
+```
+### Correlation Matrix
+```{r}
+corrplot(cor(finalClusteredData), type = "upper", title = "Correlation Plot for Final Cleaned Data", mar=c(0,0,1,0),
+         tl.cex=0.7,
+         tl.col = "black")
+```
+
+# Data Processing
+## Train and Test Split
+```{r}
+# Generate a random number sequence that can be reproduced to verify results.
+set.seed(2004)
+
+train <- sample.split(Y = finalClusteredData$response, SplitRatio = 0.75)
+trainset <- subset(finalClusteredData, train == T)
+testset <- subset(finalClusteredData, train == F)
+summary(trainset)
+```
+## Balance imbalanced dataset using SMOTE
+```{r}
+set.seed(2004)
+# Count of unique value in the target variable
+as.data.frame(table(trainset$response))
+
+# Convert the response var from num to factor
+trainset$response = as.factor(trainset$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_trainset = SMOTE(response~., trainset, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_trainset$response))
+
+# Convert the response var from num to factor
+testset$response = as.factor(testset$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_testset = SMOTE(response~., testset, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_testset$response))
+```
+### Correlation Matrix after SMOTE
+```{r}
+SMOTEData = rbind(balanced_trainset, balanced_testset)
+SMOTEData$response = as.integer(SMOTEData$response)
+corrplot(cor(SMOTEData), type = "upper", title = "Correlation Plot for Final Cleaned SMOTE Data", mar=c(0,0,1,0),
+         tl.cex=0.7,
+         tl.col = "black")
+```
+
+# Machine Learning Models:
+## Logistic Regression Model (All variables) with Stratified 10-fold Validation
+```{r}
+logistic = glm(response ~ .,
+               data = balanced_trainset,
+               family=binomial(link="logit"))
+
+summary(logistic)
+probability = predict(logistic,type = 'response')
+```
+```{r}
+folds=10
+cvIndex <- createFolds(factor(balanced_trainset$response), folds, returnTrain = T) #stratified k fold
+train_control <- trainControl(
+  index = cvIndex,
+  number = folds,
+  method = "cv",
+)
+
+#install.packages('e1071', dependencies=TRUE)
+
+logistic <- train(
+  response~., data=balanced_trainset,
+  trControl = train_control,
+  method = "glm",
+  family=binomial()
+)
+```
+```{r}
+logistic.predict.train <- predict(logistic, newdata = balanced_trainset, type = "raw")
+results <- data.frame(balanced_trainset, logistic.predict.train)
+traintable <- table(logistic.predict.train, balanced_trainset$response)
+traintable
+round(prop.table(traintable),2)
+print("Train Accuracy:")
+mean(results$logistic.predict.train == balanced_trainset$response)
+
+logistic.predict.test <- predict(logistic, newdata = balanced_testset, type = "raw")
+results <- data.frame(balanced_testset, logistic.predict.test)
+testtable <- table(logistic.predict.test, balanced_testset$response)
+testtable
+round(prop.table(testtable),2)
+print("Test Accuracy:")
+mean(results$logistic.predict.test == balanced_testset$response)
+```
+
+## Logistic Regression (response ~ duration)
+```{r}
+logistic.2 = glm(response ~ duration,
+               data = balanced_trainset,
+               family=binomial)
+
+summary(logistic.2)
+prob = predict(logistic.2,type = 'response')
+plot(x = balanced_trainset$duration, y = prob)
+```
+```{r}
+threshold = 0.5
+# If probability greater than the threshold then predict y=1 or else y=0 
+y.hat = ifelse(prob>threshold, 1, 0)
+# Create a confusion  matrix
+table(balanced_trainset$response,y.hat,deparse.level = 2)
+mean(y.hat == balanced_trainset$response)
+```
+## Logistic Regression (response ~ balance)
+```{r}
+logistic.2 = glm(response ~ balance,
+               data = balanced_trainset,
+               family=binomial)
+
+summary(logistic.2)
+prob1 = predict(logistic.2,type = 'response')
+plot(x = balanced_trainset$balance, y = prob1)
+```
+```{r}
+threshold = 0.5
+# If probability greater than the threshold then predict y=1 or else y=0 
+y.hat1 = ifelse(prob1>threshold, 1, 0)
+# Create a confusion  matrix
+table(balanced_trainset$response,y.hat1,deparse.level = 2)
+mean(y.hat1 == balanced_trainset$response)
+```
+## Logistic Regression (response ~ campaign)
+```{r}
+logistic.3 = glm(response ~ campaign,
+               data = balanced_trainset,
+               family=binomial)
+
+summary(logistic.3)
+prob2 = predict(logistic.3,type = 'response')
+plot(x = balanced_trainset$campaign, y = prob2)
+```
+```{r}
+threshold2 = 0.5
+# If probability greater than the threshold then predict y=1 or else y=0 
+y.hat2 = ifelse(prob2>threshold2, 1, 0)
+# Create a confusion  matrix
+table(balanced_trainset$response,y.hat2,deparse.level = 2)
+mean(y.hat2 == balanced_trainset$response)
+```
+
+## CART with 10-fold Validation 
+```{r}
+library(rpart)
+library(rpart.plot)			# For Enhanced tree plots
+
+balanced_data = rbind(balanced_trainset,balanced_testset)
+head(balanced_data)
+
+set.seed(2004)
+
+cart_model <- rpart(response ~ ., data = balanced_trainset, method = 'class', control = rpart.control(minsplit = 2, cp = 0))
+
+printcp(cart_model)
+```
+```{r}
+rpart.plot(cart_model, nn= T, main = "Maximum Tree")
+```
+```{r}
+plotcp(cart_model)
+```
+
+### CART using the trainset data
+```{r}
+# 54th tree is optimal. Choose any CP value betw the 53th and 54th tree CP values.
+cp = sqrt(1.4034e-04*1.2475e-04)
+# Prune the max tree using a particular CP value
+cart_model2 <- prune(cart_model, cp = cp)
+printcp(cart_model2, digits = 3)
+# plots the tree pruned using cp1.
+rpart.plot(cart_model2, nn= T, main = "Pruned Tree with cp = 0.00132")
+```
+### CART predicting using the test set data
+```{r}
+cart_model2.predict = predict(cart_model2, newdata = balanced_testset, type = "class")
+results = data.frame(balanced_testset, cart_model2.predict)
+testtable = table(cart_model2.predict, balanced_testset$response)
+testtable
+round(prop.table(testtable),2)
+print("Test Accuracy:")
+mean(results$cart_model2.predict == balanced_testset$response)
+```
+
+## XGBoost with stratified 10-fold cross validation using caret
+```{r}
+set.seed(2004)
+grid_default <- expand.grid(
+  nrounds = 100,
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+folds=10
+cvIndex <- createFolds(factor(balanced_trainset$response), folds, returnTrain = T) #stratified k fold
+train_control <- trainControl(
+  index = cvIndex,
+  number = folds,
+  method = "cv",
+  verboseIter = FALSE, # no training log
+  allowParallel = TRUE # FALSE for reproducible results 
+)
+
+#install.packages('e1071', dependencies=TRUE)
+
+xgb_base <- train(
+  response~., data=balanced_trainset,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+
+print(xgb_base)
+
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_base.predict.train <- predict(xgb_base, newdata = balanced_trainset, type = "raw")
+results <- data.frame(balanced_trainset, xgb_base.predict.train)
+traintable <- table(xgb_base.predict.train, balanced_trainset$response)
+traintable
+round(prop.table(traintable),2)
+print("Train Accuracy:")
+mean(results$xgb_base.predict.train == balanced_trainset$response)
+
+xgb_base.predict.test <- predict(xgb_base, newdata = balanced_testset, type = "raw")
+results <- data.frame(balanced_testset, xgb_base.predict.test)
+testtable <- table(xgb_base.predict.test, balanced_testset$response)
+testtable
+round(prop.table(testtable),2)
+print("Test Accuracy:")
+mean(results$xgb_base.predict.test == balanced_testset$response)
+```
+### Feature Importance using XGBoost
+```{r}
+y = balanced_trainset$response
+X = balanced_trainset[,!"response",with=FALSE]
+xgb <- xgboost(data = data.matrix(X[,-1]), 
+ label = y, 
+  nrounds = 100,
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1,
+ eval_metric = "merror",
+ objective = "multi:softprob",
+ num_class = 12,
+ nthread = 3
+)
+```
+```{r}
+# Get the feature real names
+names <- dimnames(data.matrix(X[,-1]))[[2]]
+# Compute feature importance matrix
+importance_matrix <- xgb.importance(names, model = xgb)
+# Graph
+xgb.plot.importance(importance_matrix[1:20,])
+```
+```{r}
+selected = importance_matrix[importance_matrix$Gain >= 0.01, Feature]
+balanced_trainset1= balanced_trainset[,..selected]
+balanced_trainset1=balanced_trainset1[,response:=balanced_trainset$response]
+head(balanced_trainset1)
+balanced_testset1= balanced_testset[,..selected]
+balanced_testset1=balanced_testset1[,response:=balanced_testset$response]
+```
+
+### XGBoost model with top features (gain >= 0.01)
+```{r}
+xgb_1 <- train(
+  response~., data=balanced_trainset1,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+
+print(xgb_1)
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_1.predict.train <- predict(xgb_1, newdata = balanced_trainset1, type = "raw")
+results <- data.frame(balanced_trainset1, xgb_1.predict.train)
+traintable <- table(xgb_1.predict.train, balanced_trainset1$response)
+traintable
+round(prop.table(traintable),2)
+print("Train Accuracy:")
+mean(results$xgb_1.predict.train == balanced_trainset1$response)
+
+xgb_1.predict.test <- predict(xgb_1, newdata = balanced_testset1, type = "raw")
+results <- data.frame(balanced_testset1, xgb_1.predict.test)
+testtable <- table(xgb_1.predict.test, balanced_testset1$response)
+testtable
+round(prop.table(testtable),2)
+print("Test Accuracy:")
+mean(results$xgb_1.predict.test == balanced_testset1$response)
+```
+
+## Optimised XGBoost using Boruta Feature Selection
+```{r}
+boruta <- Boruta(response ~ ., data = balanced_testset, doTrace = 2, maxRuns=11)
+print(boruta)
+plot(boruta, las = 2, cex.axis = 0.7)
+plotImpHistory(boruta)
+
+bor <- TentativeRoughFix(boruta)
+print(bor)
+attStats(bor)
+getSelectedAttributes(bor, withTentative = F)
+```
+Drop less important variables
+```{r}
+boruta_data <- copy(finalClusteredData)
+boruta_data[, job_admin. := NULL]
+boruta_data[, job_housemaid := NULL]
+boruta_data[, `job_self-employed` := NULL]
+boruta_data[, job_technician := NULL]
+boruta_data[, job_unemployed := NULL]
+boruta_data[, marital_divorced := NULL]
+boruta_data[, default_no := NULL]
+boruta_data[, default_yes := NULL]
+```
+Train and Test Split
+```{r}
+boruta_train <- sample.split(Y = boruta_data$response, SplitRatio = 0.75)
+boruta_trainset <- subset(boruta_data, boruta_train == T)
+boruta_testset <- subset(boruta_data, boruta_train == F)
+```
+Balance imbalanced dataset using SMOTE
+```{r}
+set.seed(2004)
+# Count of unique value in the target variable
+as.data.frame(table(boruta_trainset$response))
+
+# Convert the response var from num to factor
+boruta_trainset$response = as.factor(boruta_trainset$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+boruta_balanced_trainset = SMOTE(response~., boruta_trainset, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(boruta_balanced_trainset$response))
+
+# Convert the response var from num to factor
+boruta_testset$response = as.factor(boruta_testset$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+boruta_balanced_testset = SMOTE(response~., boruta_testset, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(boruta_balanced_testset$response))
+```
+### Optimised XGBoost model with features selected by Boruta
+```{r}
+xgb_boruta <- train(
+  response~., data=boruta_balanced_trainset,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_boruta.predict.train <- predict(xgb_boruta, newdata = boruta_balanced_trainset, type = "raw")
+boruta.train.results <- data.frame(boruta_balanced_trainset, xgb_boruta.predict.train)
+boruta_traintable <- table(xgb_boruta.predict.train, boruta_balanced_trainset$response)
+boruta_traintable
+round(prop.table(boruta_traintable),2)
+print("Train Accuracy:")
+mean(boruta.train.results$xgb_boruta.predict.train == boruta_balanced_trainset$response)
+
+xgb_boruta.predict.test <- predict(xgb_boruta, newdata = boruta_balanced_testset, type = "raw")
+boruta.test.results <- data.frame(boruta_balanced_testset, xgb_boruta.predict.test)
+boruta_testtable <- table(xgb_boruta.predict.test, boruta_balanced_testset$response)
+boruta_testtable
+round(prop.table(boruta_testtable),2)
+print("Test Accuracy:")
+mean(boruta.test.results$xgb_boruta.predict.test == boruta_balanced_testset$response)
+```
+
+# Optimising model by using data from other business departments
+## Combine Operations and HR data  
+```{r}
+finalWithHR = copy(boruta_data)
+set.seed(1)
+finalWithHR$HR_edu = ifelse(boruta_data$response ==1, runif(4289, 2, 5), runif(39922, 1, 5))
+finalWithHR$HR_edu=as.integer(finalWithHR$HR_edu)
+```
+Train and Test Split
+```{r}
+# Generate a random number sequence that can be reproduced to verify results.
+set.seed(2004)
+
+train1 <- sample.split(Y = finalWithHR$response, SplitRatio = 0.75)
+trainset1 <- subset(finalWithHR, train1 == T)
+testset1 <- subset(finalWithHR, train1 == F)
+summary(trainset1)
+```
+Balance imbalanced dataset using SMOTE
+```{r}
+set.seed(2004)
+# Count of unique value in the target variable
+as.data.frame(table(trainset1$response))
+
+# Convert the response var from num to factor
+trainset1$response = as.factor(trainset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_trainset1 = SMOTE(response~., trainset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_trainset1$response))
+
+# Convert the response var from num to factor
+testset1$response = as.factor(testset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_testset1 = SMOTE(response~., testset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_testset1$response))
+
+```
+
+
+## XGBoost model with stratified 10 fold cross validation of Operations and HR data combined
+```{r}
+grid_default <- expand.grid(
+  nrounds = 1000,
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+folds=10
+cvIndex <- createFolds(factor(balanced_trainset1$response), folds, returnTrain = T) #stratified k fold
+train_control <- trainControl(
+  index = cvIndex,
+  number = folds,
+  method = "cv",
+  verboseIter = FALSE, # no training log
+  allowParallel = TRUE # FALSE for reproducible results 
+)
+
+xgb_base <- train(
+  response~., data=balanced_trainset1,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+
+print(xgb_base)
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_base.predict.train1 <- predict(xgb_base, newdata = balanced_trainset1, type = "raw")
+results <- data.frame(balanced_trainset1, xgb_base.predict.train1)
+traintable <- table(xgb_base.predict.train1, balanced_trainset1$response)
+traintable
+round(prop.table(traintable),3)
+print("Train Accuracy:")
+mean(results$xgb_base.predict.train1 == balanced_trainset1$response)
+
+xgb_base.predict.test1 <- predict(xgb_base, newdata = balanced_testset1, type = "raw")
+results <- data.frame(balanced_testset1, xgb_base.predict.test1)
+testtable <- table(xgb_base.predict.test1, balanced_testset1$response)
+testtable
+round(prop.table(testtable),3)
+print("Test Accuracy:")
+mean(results$xgb_base.predict.test1 == balanced_testset1$response)
+```
+
+## Combine Operations and Investment data
+```{r}
+finalWithInv = copy(boruta_data)
+set.seed(1)
+finalWithInv$Investment_positive = ifelse(boruta_data$response ==1, runif(5289, 0.0005, 0.004), runif(39922, 0.00, 0.004))
+```
+Train and Test Split
+```{r}
+# Generate a random number sequence that can be reproduced to verify results.
+set.seed(2004)
+
+train1 <- sample.split(Y = finalWithInv$response, SplitRatio = 0.75)
+trainset1 <- subset(finalWithInv, train1 == T)
+testset1 <- subset(finalWithInv, train1 == F)
+summary(trainset1)
+```
+
+Balance imbalanced dataset using SMOTE
+```{r}
+set.seed(2004)
+# Count of unique value in the target variable
+as.data.frame(table(trainset1$response))
+
+# Convert the response var from num to factor
+trainset1$response = as.factor(trainset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_trainset1 = SMOTE(response~., trainset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_trainset1$response))
+
+# Convert the response var from num to factor
+testset1$response = as.factor(testset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_testset1 = SMOTE(response~., testset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_testset1$response))
+
+```
+
+## XGBoost model with stratified 10 fold cross validation of Operations and Investment data combined
+```{r}
+grid_default <- expand.grid(
+  nrounds = 100,
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+folds=10
+cvIndex <- createFolds(factor(balanced_trainset1$response), folds, returnTrain = T) #stratified k fold
+train_control <- trainControl(
+  index = cvIndex,
+  number = folds,
+  method = "cv",
+  verboseIter = FALSE, # no training log
+  allowParallel = TRUE # FALSE for reproducible results 
+)
+
+xgb_base <- train(
+  response~., data=balanced_trainset1,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+
+print(xgb_base)
+
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_base.predict.train1 <- predict(xgb_base, newdata = balanced_trainset1, type = "raw")
+results <- data.frame(balanced_trainset1, xgb_base.predict.train1)
+traintable <- table(xgb_base.predict.train1, balanced_trainset1$response)
+traintable
+round(prop.table(traintable),3)
+print("Train Accuracy:")
+mean(results$xgb_base.predict.train1 == balanced_trainset1$response)
+
+xgb_base.predict.test1 <- predict(xgb_base, newdata = balanced_testset1, type = "raw")
+results <- data.frame(balanced_testset1, xgb_base.predict.test1)
+testtable <- table(xgb_base.predict.test1, balanced_testset1$response)
+testtable
+round(prop.table(testtable),3)
+print("Test Accuracy:")
+mean(results$xgb_base.predict.test1 == balanced_testset1$response)
+```
+
+## Operations, HR and Investment data combined
+```{r}
+finalCombinedData = copy(boruta_data)
+finalCombinedData$HR_edu= finalWithHR$HR_edu
+finalCombinedData$Investment_positive = finalWithInv$Investment_positive
+```
+```{r}
+head(finalCombinedData, 50)
+corrplot(cor(finalCombinedData), type = "upper", title = "Correlation plot for final combined data", mar=c(0,0,1,0),
+         tl.cex=0.7,
+         tl.col = "black")
+```
+
+
+Train and Test Split
+```{r}
+# Generate a random number sequence that can be reproduced to verify results.
+set.seed(2004)
+
+train1 <- sample.split(Y = finalCombinedData$response, SplitRatio = 0.75)
+trainset1 <- subset(finalCombinedData, train1 == T)
+testset1 <- subset(finalCombinedData, train1 == F)
+summary(trainset1)
+```
+Balance imbalanced dataset using SMOTE
+```{r}
+# Count of unique value in the target variable
+as.data.frame(table(trainset1$response))
+
+# Convert the response var from num to factor
+trainset1$response = as.factor(trainset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_trainset1 = SMOTE(response~., trainset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_trainset1$response))
+
+# Convert the response var from num to factor
+testset1$response = as.factor(testset1$response)
+## Smote : Synthetic Minority Oversampling Technique To Handle Response Imbalancy In Binary Classification
+balanced_testset1 = SMOTE(response~., testset1, perc.over = 200, k = 5, perc.under = 200, learner = NULL)
+
+as.data.frame(table(balanced_testset1$response))
+```
+Feature selection on the combined variables
+```{r}
+boruta_c <- Boruta(response ~ ., data = balanced_testset1, doTrace = 2, maxRuns=11)
+print(boruta_c)
+plot(boruta_c, las = 2, cex.axis = 0.7)
+plotImpHistory(boruta_c)
+ 
+bor_c <- TentativeRoughFix(boruta_c)
+print(bor_c)
+attStats(bor_c)
+getSelectedAttributes(bor_c, withTentative = F)
+```
+
+## XGBoost model with stratified 10 fold cross validation of Operations, HR and Investment data combined
+```{r}
+grid_default <- expand.grid(
+  nrounds = 100,
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+folds=10
+cvIndex <- createFolds(factor(balanced_trainset1$response), folds, returnTrain = T) #stratified k fold
+train_control <- trainControl(
+  index = cvIndex,
+  number = folds,
+  method = "cv",
+  verboseIter = FALSE, # no training log
+  allowParallel = TRUE # FALSE for reproducible results 
+)
+
+xgb_base <- train(
+  response~., data=balanced_trainset1,
+  trControl = train_control,
+  tuneGrid = grid_default,
+  method = "xgbTree",
+  verbose = TRUE
+)
+
+print(xgb_base)
+
+```
+Confusion Matrix and Accuracies
+```{r}
+xgb_base.predict.train1 <- predict(xgb_base, newdata = balanced_trainset1, type = "raw")
+results <- data.frame(balanced_trainset1, xgb_base.predict.train1)
+traintable <- table(xgb_base.predict.train1, balanced_trainset1$response)
+traintable
+round(prop.table(traintable),3)
+print("Train Accuracy:")
+mean(results$xgb_base.predict.train1 == balanced_trainset1$response)
+
+xgb_base.predict.test1 <- predict(xgb_base, newdata = balanced_testset1, type = "raw")
+results <- data.frame(balanced_testset1, xgb_base.predict.test1)
+testtable <- table(xgb_base.predict.test1, balanced_testset1$response)
+testtable
+round(prop.table(testtable),3)
+print("Test Accuracy:")
+mean(results$xgb_base.predict.test1 == balanced_testset1$response)
+```
+
+## Hyperparameter tuning on XGBoost to further optimise model done using grid search
+```{r}
+nrounds <- 1000
+# note to start nrounds from 200, as smaller learning rates result in errors so
+# big with lower starting points that they'll mess the scales
+tune_grid <- expand.grid(
+  nrounds = seq(from = 200, to = nrounds, by = 50),
+  eta = c(0.025, 0.05, 0.1, 0.3),
+  max_depth = c(2, 3, 4, 5, 6),
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+tune_control <- trainControl(
+  method = "cv", # cross-validation
+  number = 10, # with n folds
+  index = createFolds(balanced_trainset1$response), # fix the folds
+  verboseIter = FALSE, # no training log
+  allowParallel = TRUE # FALSE for reproducible results
+)
+
+xgb_tune <- train(
+  response~., data=balanced_trainset1,
+  trControl = tune_control,
+  tuneGrid = tune_grid,
+  method = "xgbTree",
+  verbose = TRUE
+)
+```
+```{r}
+plot(xgb_tune)
+xgb_tune
+```
+
+Final Model Confusion Matrix and Accuracies
+```{r}
+xgb_tune.predict.train <- predict(xgb_tune, newdata = balanced_trainset1, type = "raw")
+results <- data.frame(balanced_trainset1, xgb_tune.predict.train)
+traintable <- table(xgb_tune.predict.train, balanced_trainset1$response)
+traintable
+round(prop.table(traintable),2)
+print("Train Accuracy:")
+mean(results$xgb_tune.predict.train == balanced_trainset1$response)
+
+xgb_tune.predict.test <- predict(xgb_tune, newdata = balanced_testset1, type = "raw")
+results <- data.frame(balanced_testset1, xgb_tune.predict.test)
+testtable <- table(xgb_tune.predict.test, balanced_testset1$response)
+testtable
+round(prop.table(testtable),2)
+print("Test Accuracy:")
+mean(results$xgb_tune.predict.test == balanced_testset1$response)
+```
+
+# Conclusion
+An “Oracle” is an intelligent entity capable of providing highly valuable insights and advice. In the same line-of-thought, Oracle was designed to see through and utilise WhiteRock’s technical assets as a whole, to derive unique insights while reducing the cost of labour. 
+
+Using the UCI Bank Marketing Dataset as a proof of case for our solution, Oracle, we have proven that Oracle has the abilities to provide data cleaning, data visualisations, significant and relevant insights to an input dataset. Most importantly, Oracle has built a highly optimised machine learning model to produce accurate predictions on client acquisition. This will in turn help asset managers of WhiteRock optimise their client acquisition process by targeting the right customer groups using the most efficient marketing initiative strategy.
+
+In the future, we hope to develop a suite of applications, similar to Athena, which can build upon and further boost the efficiency of Oracle’s performance. Our goal is to provide WhiteRock with an edge against competitors, with a solution that is robust, easy to integrate and adaptable.
